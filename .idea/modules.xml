@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/SpliceRatio.iml" filepath="$PROJECT_DIR$/.idea/SpliceRatio.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../../codez/python/utils/.idea/utils.iml" filepath="$PROJECT_DIR$/../../codez/python/utils/.idea/utils.iml" />
     </modules>
   </component>
 </project>

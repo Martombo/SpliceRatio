@@ -11,11 +11,4 @@
     <ConfirmationsSetting value="0" id="Remove" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.4.3 (/Library/Frameworks/Python.framework/Versions/3.4/bin/python3.4)" project-jdk-type="Python SDK" />
-  <component name="PyConsoleOptionsProvider">
-    <option name="myPythonConsoleState">
-      <console-settings sdk-home="/Library/Frameworks/Python.framework/Versions/3.4/bin/python3.4">
-        <option name="mySdkHome" value="/Library/Frameworks/Python.framework/Versions/3.4/bin/python3.4" />
-      </console-settings>
-    </option>
-  </component>
 </project>
