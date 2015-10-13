@@ -1,18 +1,17 @@
 import parsers as ps
-from scipy.stats import chisquare as chi
 
 
-class SpliceRatioCounts:
-    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm=0, min_overlap=10):
+class SpliceRatioCounter:
+    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm_indels=2, min_overlap=10):
         """
         responsible of computing the count table of every junction (junction, intron, invalid counts)
         :param bam_path: must be indexed, otherwise an index will be built, provided samtools is available
         :param reads_orientation: must be 'reverse' if reads (or first reads if PE) are on the opposite strand of gene
         :param min_qual: minimal mapping quality of a read to be considered
-        :param max_mm: maximal number of mismatches and indels of a read to be considered in an intron
+        :param max_mm_indels: maximal number of mismatches (non-matches) and indels of a read to be considered in an intron
         :param min_overlap: minimal nucleotide overlap of a read in an intron to be considered in it
         """
-        self.min_overlap, self.max_mm = min_overlap, max_mm
+        self.min_overlap, self.max_mm_indels = min_overlap, max_mm_indels
         self.bams, self.splices_dic, self.start_dic, self.last_read_len = [], {}, {}, {}
         for bam_path in bam_paths:
             self.bams.append(ps.Bam(bam_path, reads_orientation))
@@ -26,15 +25,12 @@ class SpliceRatioCounts:
         """
         get the number of reads from within all the splice sites
         likely to be originating from the retained intron
-        :param min_qual: default for TopHat: only uniquely mapped reads
-        :param max_mm: max tolerated mismatches, indels on read
-        :param min_overlap: minimal bases overlap between read and site
         """
         for site_str in self.splices_dic.keys():
             site = _parse_site(site_str)
             for n_bam in range(self.n_bams):
                 for read in self.bams[n_bam].fetch(site['chrom'], site['start'], site['stop']):
-                    read_arrangement = self._read_arrangement(site, read)
+                    read_arrangement = self._read_arrangement(site_str, read)
                     self.splices_dic[site_str][n_bam][read_arrangement] += 1
 
     def _add_splice_sites(self, splice_sites, n_bam):
@@ -51,30 +47,30 @@ class SpliceRatioCounts:
                     self.splices_dic[site].append(empty_dic)
             self.splices_dic[site][n_bam]['junction'] = junction_count
 
-    def _read_arrangement(self, site, read):
+    def _read_arrangement(self, site_str, read):
         """
         determines the position of the read relative to the site:
         'surrounding': the splice site is completely inside a read non-match (another splice site)
         'intron': the read is mostly inside the splice site (min_overlap)
         'invalid': the read overlaps an exon or splices outside the site
-        :param site: dict with chrom, start, stop, strand
+        :param site_str: 'chr1_18315_29387_+'
         :param read: pysam.AlignedRead
         """
+        site = _parse_site(site_str)
         reader = ps.Read(read.cigar, read.reference_start)
-        if self._read_surrounds_splice(reader, site):
+        if self._read_surrounds_site(reader, site):
             return 'surrounding'
         if read.mapq >= self.min_qual and \
                         site['strand'] == self.bams[0].determine_strand(read) and \
-                        len(reader.mm_indels) <= self.max_mm and \
-                        self._overlap(read, site) >= self.min_overlap and \
-                        len(reader.nonmatches) < 2:
-            self.start_dic[site].append(read.reference_start)
-            self.last_read_len[site] = read.query_length
+                        len(reader.mm_indels) <= self.max_mm_indels and \
+                        self._overlap(read, site) >= self.min_overlap:
+            self.start_dic[site_str].append(read.reference_start)
+            self.last_read_len[site_str] = read.query_length
             return 'intron'
         return 'invalid'
 
     @staticmethod
-    def _read_surrounds_splice(reader, site):
+    def _read_surrounds_site(reader, site):
         """
         checks if the splice site is completely inside a read non-match (another splice site)
         """
@@ -94,7 +90,7 @@ class SpliceRatioCounts:
             overlap = read_len - (site['start'] - read.reference_start)
         if site['stop'] < read.reference_start + read_len:
             overlap = min(site['stop'] - read.reference_start, overlap)
-        return overlap
+        return max(overlap, 0)
 
 
 class SpliceRatioFilter:
@@ -151,11 +147,14 @@ class SpliceRatioFilter:
         returns True if coverage of the site is too unequal (defined by max_unequal)
         """
         bin_counts = self._fill_bins(starts)
-        chi_test = chi(bin_counts)[0]
         mean_bin_count = sum(bin_counts)/len(bin_counts)
+        chi_test = self._chi_test(bin_counts, mean_bin_count)
         if chi_test / mean_bin_count > self.max_unequal:
             return True
         return False
+
+    def _chi_test(self, obs, exp):
+        return sum([((x - exp)**2) / exp for x in obs])
 
     def _fill_bins(self, starts):
         first_start = starts[0]
@@ -194,10 +193,15 @@ def _parse_site(site_str):
     site_dic = dict(zip(['chrom', 'start', 'stop', 'strand'], site_str.split('_')))
     site_dic['start'] = int(site_dic['start'])
     site_dic['stop'] = int(site_dic['stop'])
+    assert site_dic['stop'] > site_dic['start']
     return site_dic
 
 def _parse_factor(factor):
-    samples_dic = dict(zip(set(factor), [[]]*len(set(factor))))
+    samples_dic = {}
     for i,k in enumerate(factor):
+        if k not in samples_dic:
+            samples_dic[k] = []
         samples_dic[k].append(i)
+    assert len(samples_dic) > 1
+    # add exception!
     return samples_dic
