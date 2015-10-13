@@ -1,23 +1,28 @@
 import parsers as ps
+from scipy.stats import chisquare as chi
 
 
-class SpliceRatio:
-    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10):
+class SpliceRatioCounts:
+    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm=0, min_overlap=10):
         """
+        responsible of computing the count table of every junction (junction, intron, invalid counts)
         :param bam_path: must be indexed, otherwise an index will be built, provided samtools is available
         :param reads_orientation: must be 'reverse' if reads (or first reads if PE) are on the opposite strand of gene
+        :param min_qual: minimal mapping quality of a read to be considered
+        :param max_mm: maximal number of mismatches and indels of a read to be considered in an intron
+        :param min_overlap: minimal nucleotide overlap of a read in an intron to be considered in it
         """
-        self.bams = []
-        self.n_bams = len(self.bams)
-        self.splices_dic = {}
+        self.min_overlap, self.max_mm = min_overlap, max_mm
+        self.bams, self.splices_dic, self.start_dic, self.last_read_len = [], {}, {}, {}
         for bam_path in bam_paths:
             self.bams.append(ps.Bam(bam_path, reads_orientation))
+        self.n_bams = len(self.bams)
         for n_bam in range(self.n_bams):
             splice_sites = self.bams[n_bam].get_splice_sites(min_qual)
             self._add_splice_sites(splice_sites, n_bam)
         self.min_qual = min_qual
 
-    def get_splices_coverage(self, max_mm=0, min_overlap=10):
+    def get_splices_coverage(self):
         """
         get the number of reads from within all the splice sites
         likely to be originating from the retained intron
@@ -25,83 +30,61 @@ class SpliceRatio:
         :param max_mm: max tolerated mismatches, indels on read
         :param min_overlap: minimal bases overlap between read and site
         """
-        self.min_overlap, self.max_mm = min_overlap, max_mm
         for site_str in self.splices_dic.keys():
-            site = self._parse_site(site_str)
+            site = _parse_site(site_str)
             for n_bam in range(self.n_bams):
-                (count, na) = self._splice_counts(site, self.bams[n_bam])
-                self.splices_dic[site_str][n_bam]['intron'] = count
-                self.splices_dic[site_str][n_bam]['invalid'] = na
-
-    def filter_sites(self, max_sites_within=0):
-        for site in self.splices_dic.keys():
-            if self._too_many_invalid(site):
-                del self.splices_dic[site]
-            elif self._unequal_cov(site):
-                del self.splices_dic[site]
+                for read in self.bams[n_bam].fetch(site['chrom'], site['start'], site['stop']):
+                    read_arrangement = self._read_arrangement(site, read)
+                    self.splices_dic[site_str][n_bam][read_arrangement] += 1
 
     def _add_splice_sites(self, splice_sites, n_bam):
-        for k,v in splice_sites:
-            if k not in self.splices_dic:
-                self.splices_dic[k] = []
+        """
+        populates self.splices_dic and self.start_dic
+        :param splice_sites: bam splice sites dict, from Bam().get_splice_sites()
+        :param n_bam: bam index
+        """
+        for site, junction_count in splice_sites:
+            if site not in self.splices_dic:
+                self.splices_dic[site] = []
+                empty_dic = dict(zip(['junction', 'intron', 'invalid', 'surrounding'], [0] * 4))
                 for bam in range(self.n_bams):
-                    self.splices_dic[k].append({'junction':0})
-            self.splices_dic[k][n_bam]['junction'] = v
+                    self.splices_dic[site].append(empty_dic)
+            self.splices_dic[site][n_bam]['junction'] = junction_count
 
-    def _parse_site(self, site_str):
-        site_dic = dict(zip(('chrom', 'start', 'stop', 'strand'), site_str.split('_')))
-        site_dic['start'] = int(site_dic['start'])
-        site_dic['stop'] = int(site_dic['stop'])
-        return site_dic
-
-    def _splice_counts(self, site, bam):
+    def _read_arrangement(self, site, read):
         """
-        returns the number of reads from within one given site
-        likely to be originating from the retained intron
-        and the number of invalid reads
+        determines the position of the read relative to the site:
+        'surrounding': the splice site is completely inside a read non-match (another splice site)
+        'intron': the read is mostly inside the splice site (min_overlap)
+        'invalid': the read overlaps an exon or splices outside the site
         :param site: dict with chrom, start, stop, strand
+        :param read: pysam.AlignedRead
         """
-        n_reads, n_na = 0, 0
-        for read in bam.fetch(site['chrom'], site['start'], site['stop']):
-            flag = self._inspect_read(read, site, bam)
-            if flag <= 1:
-                n_reads += flag
-            else:
-                n_na += 1
-        return (n_reads, n_na)
-
-    def _inspect_read(self, read, site, bam):
-        read_splicer = ps.Read(read.cigar, read.reference_start)
+        reader = ps.Read(read.cigar, read.reference_start)
+        if self._read_surrounds_splice(reader, site):
+            return 'surrounding'
         if read.mapq >= self.min_qual and \
-                        site['strand'] == bam.determine_strand(read) and \
-                        read.get_mismatches() <= self.max_mm and \
-                        self._overlap(read, site) >= self.min_overlap:
-            return 1
-        else:
-            return 0
+                        site['strand'] == self.bams[0].determine_strand(read) and \
+                        len(reader.mm_indels) <= self.max_mm and \
+                        self._overlap(read, site) >= self.min_overlap and \
+                        len(reader.nonmatches) < 2:
+            self.start_dic[site].append(read.reference_start)
+            self.last_read_len[site] = read.query_length
+            return 'intron'
+        return 'invalid'
 
-    def _read_in_site(self, read, site):
+    @staticmethod
+    def _read_surrounds_splice(reader, site):
         """
-        checks if a read is fully inside region and a good enough match
-        :param read: read to be checked (pysam.AlignedRead)
-        :param start: start of the splice site
-        :param stop: end of splice site
-        :return: flag: 0 not ,1 is in site 2: Na, other splice site within site thus biased coverage
+        checks if the splice site is completely inside a read non-match (another splice site)
         """
-        mm = 0
-        for c_part in read.cigar:
-            if c_part[0] != 0:
-                mm += c_part[1]
-            if c_part[0] == 3 and c_part[1] > 2:
-                if self._site_in_read_splice(read, site):
-                    return 0
-                return 2
-        overlap = self._overlap(read, site)
-        if overlap < self.min_overlap or mm > self.max_mm:
-            return 0
-        return 1
+        for read_site in reader.splice_sites:
+            if read_site[0] <= site['start'] and read_site[1] >= site['stop']:
+                return True
+        return False
 
-    def _overlap(self, read, site):
+    @staticmethod
+    def _overlap(read, site):
         """
         computes the number of bases of overlap between a read and a site
         """
@@ -113,13 +96,108 @@ class SpliceRatio:
             overlap = min(site['stop'] - read.reference_start, overlap)
         return overlap
 
-    def _site_in_read_splice(self, read, site):
+
+class SpliceRatioFilter:
+    def __init__(self, sample_conditions, splice_ratio_counts, min_counts=20, max_invalid=0.05, max_unequal=10, n_bins=10, max_uncovered=0.1):
         """
-        checks if the splice site is completely inside a read non-match (another splice site)
+        responsible of filtering junction counts to keep only high confidence intron (or pre-mRNA) reads
+        :param sample_conditions:
+        :param splice_ratio_counts:
+        :param min_counts:
+        :param max_invalid:
+        :param max_unequal:
+        :param n_bins:
+        :param max_uncovered:
+        :return:
         """
-        read_splicer = ps.Read(read.cigar, read.reference_start)
-        read_splice_sites = read_splicer.get_splice_sites()
-        for read_site in read_splice_sites:
-            if read_site[0] <= site['start'] and read_site[1] >= site['stop']:
+        self.condition = _parse_factor(sample_conditions)
+        self.splice_ratio_counts = splice_ratio_counts
+        self.min_counts = min_counts
+        self.max_invalid = max_invalid
+        self.max_unequal = max_unequal
+        self.max_uncovered = max_uncovered
+        self.n_bins = n_bins
+
+    def filter_sites(self):
+        """
+        removes sites from self.splices_dic if reads are unlikely to be
+        coming from pre-mRNA or intron retention (...)
+        """
+        for site in self.splice_ratio_counts.splices_dic.keys():
+            counts = self.splice_ratio_counts.splices_dic[site]
+            starts = self.splice_ratio_counts.start_dic[site]
+            last_read_len = self.splice_ratio_counts.last_read_len[site]
+            if self._few_valid_or_many_invalid(counts) or \
+                    self._not_all_covered(site, starts, last_read_len) or \
+                    self._unequal_cov(starts):
+                del self.splice_ratio_counts.splices_dic[site]
+
+    def _few_valid_or_many_invalid(self, counts):
+        """
+        returns True if there are too few valid or too many invalid reads in site
+        """
+        for condition_i in self.condition.keys():
+            cond_sum_i, cond_sum_j, cond_sum_n = 0, 0, 0
+            for sample in self.condition[condition_i]:
+                cond_sum_j += counts[sample]['junction']
+                cond_sum_i += counts[sample]['intron']
+                cond_sum_n += counts[sample]['invalid']
+            if min(cond_sum_j, cond_sum_i) < self.min_counts or cond_sum_n > self.max_invalid:
                 return True
         return False
+
+    def _unequal_cov(self, starts):
+        """
+        returns True if coverage of the site is too unequal (defined by max_unequal)
+        """
+        bin_counts = self._fill_bins(starts)
+        chi_test = chi(bin_counts)[0]
+        mean_bin_count = sum(bin_counts)/len(bin_counts)
+        if chi_test / mean_bin_count > self.max_unequal:
+            return True
+        return False
+
+    def _fill_bins(self, starts):
+        first_start = starts[0]
+        len_starts = starts[len(starts) - 1] - first_start
+        bin_width = len_starts / self.n_bins
+        bins, bin_count = [], 0
+        for start in starts:
+            dist_from_first = start - first_start
+            if dist_from_first < bin_width:
+                bin_count += 1
+            else:
+                bins.append(bin_count)
+                first_start += bin_width
+                bin_count = 1
+        return bins
+
+    def _not_all_covered(self, site, starts, last_read_len):
+        """
+        returns True if coverage of the site is not completely covered (up to max_uncovered%)
+        """
+        site_dic = _parse_site(site)
+        end_last = starts[len(starts) - 1] + last_read_len
+        start_first = starts[0]
+        site_len = site_dic['stop'] - site_dic['start']
+        max_uncovered_bases = site_len * self.max_uncovered
+        if  start_first > site_dic['start'] + max_uncovered_bases or \
+            end_last < site_dic['stop'] - max_uncovered_bases:
+            return True
+        return False
+
+def _parse_site(site_str):
+    """
+    :param site_str: splice site string 'chr1_1024_1560_+'
+    :return: dict: chrom, start, stop, strand
+    """
+    site_dic = dict(zip(['chrom', 'start', 'stop', 'strand'], site_str.split('_')))
+    site_dic['start'] = int(site_dic['start'])
+    site_dic['stop'] = int(site_dic['stop'])
+    return site_dic
+
+def _parse_factor(factor):
+    samples_dic = dict(zip(set(factor), [[]]*len(set(factor))))
+    for i,k in enumerate(factor):
+        samples_dic[k].append(i)
+    return samples_dic
