@@ -2,19 +2,25 @@ import parsers as ps
 
 
 class SpliceRatioCounter:
-    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm_indels=2, min_overlap=10):
+    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm_indels=2, min_overlap=10,
+                 test=False):
         """
         responsible of computing the count table of every junction (junction, intron, invalid counts)
-        :param bam_path: must be indexed, otherwise an index will be built, provided samtools is available
+        :param bam_paths: blank space separated list of bam files paths (if no index, one is built with samtools)
         :param reads_orientation: must be 'reverse' if reads (or first reads if PE) are on the opposite strand of gene
         :param min_qual: minimal mapping quality of a read to be considered
-        :param max_mm_indels: maximal number of mismatches (non-matches) and indels of a read to be considered in an intron
+        :param max_mm_indels: maximal number of non-matches and indels of a read to be considered in an intron
         :param min_overlap: minimal nucleotide overlap of a read in an intron to be considered in it
+        :param test: for testing
         """
+        if not test:
+            assert bam_paths
         self.min_overlap, self.max_mm_indels = min_overlap, max_mm_indels
         self.bams, self.splices_dic, self.start_dic, self.last_read_len = [], {}, {}, {}
-        for bam_path in bam_paths:
-            self.bams.append(ps.Bam(bam_path, reads_orientation))
+        self.arrangements = ['junction', 'intron', 'invalid', 'surrounding']
+        for bam_path in bam_paths.split(' '):
+            if bam_path:
+                self.bams.append(ps.Bam(bam_path, reads_orientation))
         self.n_bams = len(self.bams)
         for n_bam in range(self.n_bams):
             splice_sites = self.bams[n_bam].get_splice_sites(min_qual)
@@ -39,11 +45,11 @@ class SpliceRatioCounter:
         :param splice_sites: bam splice sites dict, from Bam().get_splice_sites()
         :param n_bam: bam index
         """
-        for site, junction_count in splice_sites:
+        for site, junction_count in splice_sites.items():
             if site not in self.splices_dic:
                 self.splices_dic[site] = []
-                empty_dic = dict(zip(['junction', 'intron', 'invalid', 'surrounding'], [0] * 4))
                 for bam in range(self.n_bams):
+                    empty_dic = dict(zip(self.arrangements, [0] * 4))
                     self.splices_dic[site].append(empty_dic)
             self.splices_dic[site][n_bam]['junction'] = junction_count
 
@@ -94,51 +100,76 @@ class SpliceRatioCounter:
 
 
 class SpliceRatioFilter:
-    def __init__(self, sample_conditions, splice_ratio_counts, min_counts=20, max_invalid=0.05, max_unequal=10, n_bins=10, max_uncovered=0.1):
+    def __init__(self, splice_ratio_counts=None, sample_conditions=None, min_valid=20, min_covered=0.8,
+                 max_invalid=0.05, n_bins=5, max_unequal=5, test=False):
         """
         responsible of filtering junction counts to keep only high confidence intron (or pre-mRNA) reads
-        :param sample_conditions:
-        :param splice_ratio_counts:
-        :param min_counts:
-        :param max_invalid:
-        :param max_unequal:
-        :param n_bins:
-        :param max_uncovered:
-        :return:
+        :param splice_ratio_counts: SpliceRatioCounter object, on which get_splices_coverage was run
+        :param sample_conditions: sample condition factor eg: ['A', 'A', 'B', 'B']
+        :param min_valid: minimal number of valid reads (both junction, intron) present in the totals of each condition
+        :param min_covered: minimal % of the intron which is covered with reads, samples of same condition aggregated
+        :param max_invalid: maximal number of invalid reads present in the totals of each condition
+        :param n_bins: number of bins in which the valid reads covering the intron are divided
+        :param max_unequal: maximal value of chi_square_test / mean(bins)
+        :param test: for testing
         """
+        if not test:
+            assert splice_ratio_counts and sample_conditions
         self.condition = _parse_factor(sample_conditions)
         self.splice_ratio_counts = splice_ratio_counts
-        self.min_counts = min_counts
+        self.min_int_jun = min_valid
         self.max_invalid = max_invalid
         self.max_unequal = max_unequal
-        self.max_uncovered = max_uncovered
+        self.max_uncovered = (1 - min_covered) / 2.0
         self.n_bins = n_bins
+        self.masked_sites, self.licit_sites = {}, {}
 
     def filter_sites(self):
         """
-        removes sites from self.splices_dic if reads are unlikely to be
+        sites from splices_dic are added to licit_sites if reads are likely to be
         coming from pre-mRNA or intron retention (...)
+        otherwise they are added to masked_sites
         """
         for site in self.splice_ratio_counts.splices_dic.keys():
             counts = self.splice_ratio_counts.splices_dic[site]
             starts = self.splice_ratio_counts.start_dic[site]
             last_read_len = self.splice_ratio_counts.last_read_len[site]
-            if self._few_valid_or_many_invalid(counts) or \
-                    self._not_all_covered(site, starts, last_read_len) or \
-                    self._unequal_cov(starts):
-                del self.splice_ratio_counts.splices_dic[site]
+            invalids = self._few_valid_or_many_invalid(counts)
+            covered = self._all_covered(site, starts, last_read_len)
+            unequal = self._unequal_cov(starts)
+            if invalids or not covered or unequal:
+                self.masked_sites[site] = [invalids, not covered, unequal]
+            else:
+                self.licit_sites[site] = counts
+
+    def table(self, case):
+        """
+        returns a table (string) with the information about sites specified in case:
+        'chr1_34098_44019_+ 10 14 23 9
+        chr12_21385_89144_- 21 49 20 0'
+        :param case: must be one of: 'junction', 'intron', 'invalid', 'surrounding', 'masked'
+        :rtype str
+        """
+        string = ''
+        if case == 'masked':
+            for site, checks in self.masked_sites.items():
+                string += site + ' ' + ' '.join([str(x) for x in checks]) + '\n'
+        elif case in self.splice_ratio_counts.arrangements:
+            for site, site_dic in self.licit_sites.items():
+                string += site + ' ' + ' '.join(str(x[case]) for x in site_dic) + '\n'
+        return string
 
     def _few_valid_or_many_invalid(self, counts):
         """
         returns True if there are too few valid or too many invalid reads in site
         """
         for condition_i in self.condition.keys():
-            cond_sum_i, cond_sum_j, cond_sum_n = 0, 0, 0
+            intron_count, junction_count, invalid_count = 0, 0, 0
             for sample in self.condition[condition_i]:
-                cond_sum_j += counts[sample]['junction']
-                cond_sum_i += counts[sample]['intron']
-                cond_sum_n += counts[sample]['invalid']
-            if min(cond_sum_j, cond_sum_i) < self.min_counts or cond_sum_n > self.max_invalid:
+                junction_count += counts[sample]['junction']
+                intron_count += counts[sample]['intron']
+                invalid_count += counts[sample]['invalid']
+            if min(junction_count, intron_count) < self.min_int_jun or invalid_count > self.max_invalid:
                 return True
         return False
 
@@ -146,44 +177,47 @@ class SpliceRatioFilter:
         """
         returns True if coverage of the site is too unequal (defined by max_unequal)
         """
+        assert len(starts) >= self.min_int_jun
         bin_counts = self._fill_bins(starts)
-        mean_bin_count = sum(bin_counts)/len(bin_counts)
-        chi_test = self._chi_test(bin_counts, mean_bin_count)
+        mean_bin_count = sum(bin_counts) / len(bin_counts)
+        chi_test = _chi_test(bin_counts, mean_bin_count)
         if chi_test / mean_bin_count > self.max_unequal:
             return True
         return False
 
-    def _chi_test(self, obs, exp):
-        return sum([((x - exp)**2) / exp for x in obs])
-
-    def _fill_bins(self, starts):
-        first_start = starts[0]
-        len_starts = starts[len(starts) - 1] - first_start
-        bin_width = len_starts / self.n_bins
-        bins, bin_count = [], 0
-        for start in starts:
-            dist_from_first = start - first_start
-            if dist_from_first < bin_width:
-                bin_count += 1
-            else:
-                bins.append(bin_count)
-                first_start += bin_width
-                bin_count = 1
-        return bins
-
-    def _not_all_covered(self, site, starts, last_read_len):
+    def _all_covered(self, site_str, starts, last_read_len):
         """
-        returns True if coverage of the site is not completely covered (up to max_uncovered%)
+        returns True if the coverage of the site is completely covered (up to max_uncovered%)
         """
-        site_dic = _parse_site(site)
+        site_dic = _parse_site(site_str)
         end_last = starts[len(starts) - 1] + last_read_len
         start_first = starts[0]
         site_len = site_dic['stop'] - site_dic['start']
         max_uncovered_bases = site_len * self.max_uncovered
-        if  start_first > site_dic['start'] + max_uncovered_bases or \
-            end_last < site_dic['stop'] - max_uncovered_bases:
-            return True
-        return False
+        if start_first > site_dic['start'] + max_uncovered_bases or \
+                end_last < site_dic['stop'] - max_uncovered_bases:
+            return False
+        return True
+
+    def _fill_bins(self, starts):
+        """
+        divides a list of numbers into deciles
+        """
+        starts = sorted(starts)
+        bin_width = (starts[len(starts) - 1] - starts[0]) / float(self.n_bins)
+        if bin_width == 0:
+            return [len(starts)] + [0] * (self.n_bins - 1)
+        bins, bin_count = [], 0
+        bin_pos = starts[0] + bin_width
+        for start in starts:
+            while start > bin_pos:
+                bins.append(bin_count)
+                bin_pos += bin_width
+                bin_count = 0
+            bin_count += 1
+        bins.append(bin_count)
+        return bins
+
 
 def _parse_site(site_str):
     """
@@ -196,12 +230,18 @@ def _parse_site(site_str):
     assert site_dic['stop'] > site_dic['start']
     return site_dic
 
+
 def _parse_factor(factor):
+    if not factor:
+        return None
     samples_dic = {}
-    for i,k in enumerate(factor):
+    for i, k in enumerate(factor):
         if k not in samples_dic:
             samples_dic[k] = []
         samples_dic[k].append(i)
     assert len(samples_dic) > 1
-    # add exception!
     return samples_dic
+
+
+def _chi_test(obs, exp):
+    return sum([((x - exp) ** 2) / exp for x in obs])
