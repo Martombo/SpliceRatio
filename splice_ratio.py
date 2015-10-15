@@ -42,12 +42,12 @@ class SpliceRatioCounter:
     def _add_splice_sites(self, splice_sites, n_bam):
         """
         populates self.splices_dic and self.start_dic
-        :param splice_sites: bam splice sites dict, from Bam().get_splice_sites()
+        :param splice_sites: bam splice sites str, from Bam().get_splice_sites()
         :param n_bam: bam index
         """
         for site, junction_count in splice_sites.items():
             if site not in self.splices_dic:
-                self.splices_dic[site] = []
+                self.splices_dic[site], self.start_dic[site], self.last_read_len[site] = [], [], 0
                 for bam in range(self.n_bams):
                     empty_dic = dict(zip(self.arrangements, [0] * 4))
                     self.splices_dic[site].append(empty_dic)
@@ -101,7 +101,7 @@ class SpliceRatioCounter:
 
 class SpliceRatioFilter:
     def __init__(self, splice_ratio_counts=None, sample_conditions=None, min_valid=20, min_covered=0.8,
-                 max_invalid=0.05, n_bins=5, max_unequal=5, test=False):
+                 max_invalid=20, max_invalid_ratio=0.2, n_bins=5, max_unequal=5, test=False):
         """
         responsible of filtering junction counts to keep only high confidence intron (or pre-mRNA) reads
         :param splice_ratio_counts: SpliceRatioCounter object, on which get_splices_coverage was run
@@ -109,6 +109,7 @@ class SpliceRatioFilter:
         :param min_valid: minimal number of valid reads (both junction, intron) present in the totals of each condition
         :param min_covered: minimal % of the intron which is covered with reads, samples of same condition aggregated
         :param max_invalid: maximal number of invalid reads present in the totals of each condition
+        :param max_invalid_ratio: maximal ratio of invalid reads over intronics present in the totals of each condition
         :param n_bins: number of bins in which the valid reads covering the intron are divided
         :param max_unequal: maximal value of chi_square_test / mean(bins)
         :param test: for testing
@@ -119,10 +120,12 @@ class SpliceRatioFilter:
         self.splice_ratio_counts = splice_ratio_counts
         self.min_int_jun = min_valid
         self.max_invalid = max_invalid
+        self.max_invalid_ratio = max_invalid_ratio
         self.max_unequal = max_unequal
         self.max_uncovered = (1 - min_covered) / 2.0
         self.n_bins = n_bins
         self.masked_sites, self.licit_sites = {}, {}
+        self.test = test
 
     def filter_sites(self):
         """
@@ -134,6 +137,8 @@ class SpliceRatioFilter:
             counts = self.splice_ratio_counts.splices_dic[site]
             starts = self.splice_ratio_counts.start_dic[site]
             last_read_len = self.splice_ratio_counts.last_read_len[site]
+            if not starts and not self.test:
+                continue
             invalids = self._few_valid_or_many_invalid(counts)
             covered = self._all_covered(site, starts, last_read_len)
             unequal = self._unequal_cov(starts)
@@ -163,21 +168,27 @@ class SpliceRatioFilter:
         """
         returns True if there are too few valid or too many invalid reads in site
         """
+        max_intron_count = 0
         for condition_i in self.condition.keys():
             intron_count, junction_count, invalid_count = 0, 0, 0
             for sample in self.condition[condition_i]:
                 junction_count += counts[sample]['junction']
                 intron_count += counts[sample]['intron']
                 invalid_count += counts[sample]['invalid']
-            if min(junction_count, intron_count) < self.min_int_jun or invalid_count > self.max_invalid:
+            invalid_ratio = float(invalid_count) / max(intron_count, 1)
+            max_intron_count = max(max_intron_count, intron_count)
+            if junction_count < self.min_int_jun or \
+                    invalid_count > self.max_invalid or \
+                    invalid_ratio > self.max_invalid_ratio:
                 return True
+        if max_intron_count < self.min_int_jun:
+            return True
         return False
 
     def _unequal_cov(self, starts):
         """
         returns True if coverage of the site is too unequal (defined by max_unequal)
         """
-        assert len(starts) >= self.min_int_jun
         bin_counts = self._fill_bins(starts)
         mean_bin_count = sum(bin_counts) / len(bin_counts)
         chi_test = _chi_test(bin_counts, mean_bin_count)
