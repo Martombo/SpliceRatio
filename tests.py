@@ -322,10 +322,10 @@ class TestFewValidOrManyInvalid(ut.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.filter = sr.SpliceRatioFilter(sample_conditions=['A','B'], max_invalid=20, min_valid=20, test=True)
+        cls.filter = sr.SpliceRatioFilter(sample_conditions=['A','B'], max_invalid_ratio=0.1, min_valid=20, test=True)
         cls.counts_ok = {'intron': 30, 'junction': 30, 'invalid': 0, 'surrounding': 0}
         cls.counts_invalid = {'intron': 30, 'junction': 30, 'invalid': 30, 'surrounding': 0}
-        cls.counts_intron = {'intron': 10, 'junction': 30, 'invalid': 0, 'surrounding': 0}
+        cls.counts_intron = {'intron': 5, 'junction': 30, 'invalid': 0, 'surrounding': 0}
         cls.counts_junction = {'intron': 30, 'junction': 10, 'invalid': 0, 'surrounding': 0}
 
     def test_simple(self):
@@ -334,11 +334,22 @@ class TestFewValidOrManyInvalid(ut.TestCase):
     def test_many_invalid(self):
         self.assertTrue(self.filter._few_valid_or_many_invalid([self.counts_ok, self.counts_invalid]))
 
-    def test_few_introns(self):
-        self.assertTrue(self.filter._few_valid_or_many_invalid([self.counts_ok, self.counts_intron]))
+    def test_few_introns_1sample(self):
+        self.assertFalse(self.filter._few_valid_or_many_invalid([self.counts_ok, self.counts_intron]))
+
+    def test_few_introns_2samples(self):
+        self.assertTrue(self.filter._few_valid_or_many_invalid([self.counts_intron, self.counts_intron]))
 
     def test_few_junction(self):
         self.assertTrue(self.filter._few_valid_or_many_invalid([self.counts_ok, self.counts_junction]))
+
+    def test_scn3a(self):
+        filter = sr.SpliceRatioFilter(sample_conditions=['K']*2+['w']*2, max_invalid_ratio=0.2, min_valid=20, test=True)
+        counts = [{'intron': 26, 'surrounding': 58, 'invalid': 3, 'junction': 50},
+                  {'intron': 13, 'surrounding': 51, 'invalid': 1, 'junction': 46},
+                  {'intron': 98, 'surrounding': 27, 'invalid': 2, 'junction': 21},
+                  {'intron': 95, 'surrounding': 18, 'invalid': 0, 'junction': 16}]
+        self.assertFalse(filter._few_valid_or_many_invalid(counts))
 
 
 class TestFilterSites(ut.TestCase):
@@ -385,7 +396,7 @@ class TestTable(ut.TestCase):
         counts_bad1 = dict(zip(arrangements, [0, 0, 700, 0]))
         counts_bad2 = dict(zip(arrangements, [0, 0, 200, 0]))
         counter.splices_dic = {'site_ok': [counts_ok1, counts_ok2], 'site_bad': [counts_bad1, counts_bad2]}
-        cls.filter = sr.SpliceRatioFilter(splice_ratio_counts=counter, sample_conditions=['A','B'])
+        cls.filter = sr.SpliceRatioFilter(splice_ratio_counts=counter, sample_conditions=['A','B'], test=True)
         cls.filter._fill_bins = um.Mock(return_value=[10]*5)
         cls.filter._all_covered = um.Mock(return_value=True)
         cls.filter._unequal_cov = um.Mock(return_value=False)
