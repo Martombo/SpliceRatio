@@ -235,9 +235,13 @@ def _parse_site(site_str):
     :param site_str: splice site string 'chr1_1024_1560_+'
     :return: dict: chrom, start, stop, strand
     """
-    site_dic = dict(zip(['chrom', 'start', 'stop', 'strand'], site_str.split('_')))
-    site_dic['start'] = int(site_dic['start'])
-    site_dic['stop'] = int(site_dic['stop'])
+    site_dic = {}
+    site_split = site_str.split('_')
+    assert len(site_split) > 3
+    site_dic['strand'] = site_split[-1]
+    site_dic['stop'] = int(site_split[-2])
+    site_dic['start'] = int(site_split[-3])
+    site_dic['chrom'] = '_'.join(site_split[:-3])
     assert site_dic['stop'] > site_dic['start']
     return site_dic
 

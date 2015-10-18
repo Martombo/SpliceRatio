@@ -16,6 +16,14 @@ class TestParsers(ut.TestCase):
         self.assertEquals(25983,site_dic['stop'])
         self.assertEquals('+',site_dic['strand'])
 
+    def test_parse_site_underscore(self):
+        site_str = 'chr1_gl0000asd_18263_25973_-'
+        site_dic = sr._parse_site(site_str)
+        self.assertEquals('chr1_gl0000asd',site_dic['chrom'])
+        self.assertEquals(18263,site_dic['start'])
+        self.assertEquals(25973,site_dic['stop'])
+        self.assertEquals('-',site_dic['strand'])
+
     def test_parse_factor(self):
         factor = ['A', 'A', 'B', 'B']
         samples_dic = sr._parse_factor(factor)
