@@ -108,11 +108,6 @@ class TestReadArrangement(ut.TestCase):
         self.assertEquals(self.counter._read_arrangement(self.site_str, self.read), 'invalid')
         self.site_str = '1_100_200_+'
 
-    def test_invalid_mm(self):
-        self.read.cigar = [(3, 3)]
-        self.assertEquals(self.counter._read_arrangement(self.site_str, self.read), 'invalid')
-        self.read.cigar = []
-
     def test_invalid_overlap(self):
         self.counter._overlap = um.MagicMock(return_value=5)
         self.assertEquals(self.counter._read_arrangement(self.site_str, self.read), 'invalid')

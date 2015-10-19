@@ -2,22 +2,20 @@ import parsers as ps
 
 
 class SpliceRatioCounter:
-    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, max_mm_indels=2, min_overlap=10,
-                 test=False):
+    def __init__(self, bam_paths='', reads_orientation='forward', min_qual=10, min_overlap=10, test=False):
         """
         responsible of computing the count table of every junction (junction, intron, invalid counts)
         :param bam_paths: blank space separated list of bam files paths (if no index, one is built with samtools)
         :param reads_orientation: must be 'reverse' if reads (or first reads if PE) are on the opposite strand of gene
         :param min_qual: minimal mapping quality of a read to be considered
-        :param max_mm_indels: maximal number of non-matches and indels of a read to be considered in an intron
         :param min_overlap: minimal nucleotide overlap of a read in an intron to be considered in it
         :param test: for testing
         """
         if not test:
             assert bam_paths
-        self.min_overlap, self.max_mm_indels = min_overlap, max_mm_indels
-        self.bams, self.splices_dic, self.start_dic, self.last_read_len = [], {}, {}, {}
         self.arrangements = ['junction', 'intron', 'invalid', 'surrounding']
+        self.min_overlap, self.min_qual = min_overlap, min_qual
+        self.bams, self.splices_dic, self.start_dic, self.last_read_len = [], {}, {}, {}
         for bam_path in bam_paths.split(' '):
             if bam_path:
                 self.bams.append(ps.Bam(bam_path, reads_orientation))
@@ -25,7 +23,6 @@ class SpliceRatioCounter:
         for n_bam in range(self.n_bams):
             splice_sites = self.bams[n_bam].get_splice_sites(min_qual)
             self._add_splice_sites(splice_sites, n_bam)
-        self.min_qual = min_qual
 
     def get_splices_coverage(self):
         """
@@ -63,12 +60,11 @@ class SpliceRatioCounter:
         :param read: pysam.AlignedRead
         """
         site = _parse_site(site_str)
-        reader = ps.Read(read.cigar, read.reference_start)
+        reader = ps.Read(read.cigar, read.reference_start, only_splicing=True)
         if self._read_surrounds_site(reader, site):
             return 'surrounding'
         if read.mapq >= self.min_qual and \
                         site['strand'] == self.bams[0].determine_strand(read) and \
-                        len(reader.mm_indels) <= self.max_mm_indels and \
                         self._overlap(read, site) >= self.min_overlap:
             self.start_dic[site_str].append(read.reference_start)
             self.last_read_len[site_str] = read.query_length
