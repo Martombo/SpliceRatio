@@ -164,25 +164,26 @@ class SpliceRatioFilter:
         """
         returns True if there are too few valid or too many invalid reads in site
         """
-        max_intron_count, n_samples_max_cond = 0, 1
+        min_sample_intron = True
         for condition_i in self.condition.keys():
-            intron_count, junction_count, invalid_count = 0, 0, 0
-            for sample in self.condition[condition_i]:
-                junction_count += counts[sample]['junction']
-                intron_count += counts[sample]['intron']
-                invalid_count += counts[sample]['invalid']
-            invalid_ratio = float(invalid_count) / max(intron_count, 1)
-            n_samples_cond = len(self.condition[condition_i])
-            if intron_count > max_intron_count:
-                max_intron_count = intron_count
-                n_samples_max_cond = n_samples_cond
-            if junction_count < self.min_int_jun * n_samples_cond or \
-                    invalid_count > self.max_invalid or \
-                    invalid_ratio > self.max_invalid_ratio:
+            samples_summary = self._summarize_samples(condition_i, counts)
+            if samples_summary['junction'] < self.min_int_jun  or \
+                    samples_summary['invalid'] > self.max_invalid or \
+                    samples_summary['invalid_ratio'] > self.max_invalid_ratio:
                 return True
-        if max_intron_count < self.min_int_jun * n_samples_max_cond:
-            return True
-        return False
+            if samples_summary['intron'] > self.min_int_jun:
+                min_sample_intron = False
+        return min_sample_intron
+
+    def _summarize_samples(self, cond_i, counts):
+        summary = dict(zip(['intron','junction','invalid'], [0,0,0]))
+        n_samples = float(len(self.condition[cond_i]))
+        for sample in self.condition[cond_i]:
+            summary['junction'] += counts[sample]['junction'] / n_samples
+            summary['intron'] += counts[sample]['intron'] / n_samples
+            summary['invalid'] += counts[sample]['invalid'] / n_samples
+        summary['invalid_ratio'] = summary['invalid'] / max(summary['intron'], 1)
+        return summary
 
     def _unequal_cov(self, starts):
         """
