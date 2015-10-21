@@ -209,7 +209,7 @@ class TestFillBins(ut.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.n_bins = 10
-        cls.filter = sr.SpliceRatioFilter(n_bins=cls.n_bins, min_valid=2, test=True)
+        cls.filter = sr.SpliceRatioFilter(n_bins=cls.n_bins, min_valid_sample=0, test=True)
 
     def test_simple(self):
         starts = range(1, self.filter.n_bins + 1)
@@ -290,7 +290,7 @@ class TestUnequalCov(ut.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.n_bins = 5
-        cls.filter = sr.SpliceRatioFilter(min_valid=0, max_unequal=5, test=True)
+        cls.filter = sr.SpliceRatioFilter(min_valid_sample=0, max_unequal=5, test=True)
 
     def test_uniform(self):
         self.filter._fill_bins = um.Mock(return_value=range(5))
@@ -325,11 +325,11 @@ class TestFewValidOrManyInvalid(ut.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.filter = sr.SpliceRatioFilter(sample_conditions=['A','B'], max_invalid_ratio=0.1, min_valid=20, test=True)
+        cls.filter = sr.SpliceRatioFilter(sample_conditions=['A','B'], max_invalid_ratio=0.1, min_valid_sample=5, test=True)
         cls.counts_ok = {'intron': 30, 'junction': 30, 'invalid': 0, 'surrounding': 0}
         cls.counts_invalid = {'intron': 30, 'junction': 30, 'invalid': 30, 'surrounding': 0}
-        cls.counts_intron = {'intron': 5, 'junction': 30, 'invalid': 0, 'surrounding': 0}
-        cls.counts_junction = {'intron': 30, 'junction': 10, 'invalid': 0, 'surrounding': 0}
+        cls.counts_intron = {'intron': 4, 'junction': 30, 'invalid': 0, 'surrounding': 0}
+        cls.counts_junction = {'intron': 30, 'junction': 4, 'invalid': 0, 'surrounding': 0}
 
     def test_simple(self):
         self.assertFalse(self.filter._few_valid_or_many_invalid([self.counts_ok]*2))
@@ -347,7 +347,7 @@ class TestFewValidOrManyInvalid(ut.TestCase):
         self.assertTrue(self.filter._few_valid_or_many_invalid([self.counts_ok, self.counts_junction]))
 
     def test_scn3a(self):
-        filter = sr.SpliceRatioFilter(sample_conditions=['K']*2+['w']*2, max_invalid_ratio=0.2, min_valid=20, test=True)
+        filter = sr.SpliceRatioFilter(sample_conditions=['K']*2+['w']*2, max_invalid_ratio=0.2, min_valid_sample=5, test=True)
         counts = [{'intron': 26, 'surrounding': 58, 'invalid': 3, 'junction': 50},
                   {'intron': 13, 'surrounding': 51, 'invalid': 1, 'junction': 46},
                   {'intron': 98, 'surrounding': 27, 'invalid': 2, 'junction': 21},

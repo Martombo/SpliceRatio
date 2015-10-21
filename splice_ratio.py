@@ -96,7 +96,7 @@ class SpliceRatioCounter:
 
 
 class SpliceRatioFilter:
-    def __init__(self, splice_ratio_counts=None, sample_conditions=None, min_valid=20, min_covered=0.8,
+    def __init__(self, splice_ratio_counts=None, sample_conditions=None, min_valid_sample=5, min_covered=0.8,
                  max_invalid=20, max_invalid_ratio=0.2, n_bins=5, max_unequal=5, test=False):
         """
         responsible of filtering junction counts to keep only high confidence intron (or pre-mRNA) reads
@@ -114,7 +114,7 @@ class SpliceRatioFilter:
             assert splice_ratio_counts and sample_conditions
         self.condition = _parse_factor(sample_conditions)
         self.splice_ratio_counts = splice_ratio_counts
-        self.min_int_jun = min_valid
+        self.min_int_jun = min_valid_sample
         self.max_invalid = max_invalid
         self.max_invalid_ratio = max_invalid_ratio
         self.max_unequal = max_unequal
@@ -164,7 +164,7 @@ class SpliceRatioFilter:
         """
         returns True if there are too few valid or too many invalid reads in site
         """
-        max_intron_count = 0
+        max_intron_count, n_samples_max_cond = 0, 1
         for condition_i in self.condition.keys():
             intron_count, junction_count, invalid_count = 0, 0, 0
             for sample in self.condition[condition_i]:
@@ -172,12 +172,15 @@ class SpliceRatioFilter:
                 intron_count += counts[sample]['intron']
                 invalid_count += counts[sample]['invalid']
             invalid_ratio = float(invalid_count) / max(intron_count, 1)
-            max_intron_count = max(max_intron_count, intron_count)
-            if junction_count < self.min_int_jun or \
+            n_samples_cond = len(self.condition[condition_i])
+            if intron_count > max_intron_count:
+                max_intron_count = intron_count
+                n_samples_max_cond = n_samples_cond
+            if junction_count < self.min_int_jun * n_samples_cond or \
                     invalid_count > self.max_invalid or \
                     invalid_ratio > self.max_invalid_ratio:
                 return True
-        if max_intron_count < self.min_int_jun:
+        if max_intron_count < self.min_int_jun * n_samples_max_cond:
             return True
         return False
 
